@@ -11,7 +11,9 @@ const userSchema = new Schema({
   email: { type: String, required: true },
   password: { type: String, required: true },
   address: { type: String, required: true },
+  role: { type: String, required: true },
   wallet: { type: Number, default: 0 },
+  debitWallet: { type: Number, default: 0 },
 });
 
 module.exports = mongoose.model("users", userSchema);

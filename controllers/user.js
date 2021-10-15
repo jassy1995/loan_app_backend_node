@@ -1,34 +1,21 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-// const keys = require("../config/keys");
 require("../config/passport");
 const keys = process.env.SECRETKEY;
-
-// Load input validation
-const validateRegisterInput = require("../validation/register");
-const validateLoginInput = require("../validation/login");
-
-// Load User model
 const User = require("../models/user");
-let userController = {
-  //fetch current user
-  getCurrentUser: async (req, res, next) => {
-    try {
-      let user = await User.findById({ _id: req.params.currentUserId });
-      return res.json({ successResponse: user });
-    } catch (error) {
-      return res.json({ errorResponse: error });
-    }
-  },
+const Message = require("../models/admin");
+// Load input validation
+const validateRegisterInput = require("../validation/user/register");
+const validateLoginInput = require("../validation/user/login");
 
+let userController = {
   //register user
-  postSignup: async (req, res) => {
-    console.log(req.body);
+  RegisterUser: async (req, res, next) => {
     // Form validation
     const { errors, isValid } = validateRegisterInput(req.body);
     //Check validation
     if (!isValid) {
-      return res.status(400).json({ errorResponse: errors });
+      return res.json({ errorResponse: errors });
     }
     const {
       first_name,
@@ -44,6 +31,7 @@ let userController = {
     if (user) {
       return res.json({ errorResponse: "email is already taken" });
     } else {
+      let status = req.body.role ? "admin" : "user";
       try {
         let reqUser = {
           first_name,
@@ -54,6 +42,7 @@ let userController = {
           email,
           password,
           phone,
+          role: status,
         };
         let newUser = new User(reqUser);
         //generate random character
@@ -65,7 +54,7 @@ let userController = {
             newUser.password = hash;
             let saveUser = await newUser.save();
             if (saveUser) {
-              res.json({
+              return res.json({
                 successResponse: `${newUser.first_name} ${newUser.last_name} has been saved`,
               });
             } else {
@@ -80,54 +69,124 @@ let userController = {
   },
 
   //login user
-  postLogin: async (req, res) => {
+  LoginUser: async (req, res, next) => {
     // Form validation
     const { errors, isValid } = validateLoginInput(req.body);
     // Check validation
     if (!isValid) {
       return res.json({ errorResponse: errors });
     }
+    let user;
     const { email, password } = req.body;
-    console.log(req.body);
-    let user = await User.findOne({ email });
-    if (!user) {
-      return res.json({ errorResponse: "email does not found" });
-    } else {
-      try {
-        //check password
-        let verifyPassword = await bcrypt.compare(password, user.password);
-        if (verifyPassword) {
-          // Create JWT Payload
-          const payload = {
-            id: user._id,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            password: user.password,
-            email: user.email,
-          };
-          //Sign token // 1 year in seconds
-          jwt.sign(
-            payload,
-            keys,
-            {
-              expiresIn: 31556926,
-            },
-            (err, token) => {
-              res.json({
-                successResponse: "login successful",
-                token: "Bearer " + token,
-                user: user,
-              });
-            }
-          );
-        } else {
-          res.json({
-            errorResponse: "Incorrect password",
+    if (req.body.role) user = await User.findOne({ email, role: "admin" });
+
+    if (!req.body.role) user = await User.findOne({ email, role: "user" });
+
+    if (!user) return res.json({ errorResponse: "email does not found" });
+
+    try {
+      //check password
+      let verifyPassword = await bcrypt.compare(password, user.password);
+      if (verifyPassword) {
+        // Create JWT Payload
+        const payload = {
+          id: user._id,
+          email: user.email,
+          role: user.role,
+        };
+        //Sign token // 1 day(24 hours) in seconds
+        let authorizer = jwt.sign(payload, keys, {
+          expiresIn: 86400,
+        });
+        let userDetail = {
+          first_name: user.first_name,
+          last_name: user.last_name,
+          wallet: user.wallet,
+          debitWallet: user.debitWallet,
+          role: user.role,
+          email: user.email,
+        };
+        if (authorizer) {
+          return res.json({
+            successResponse: "login successful",
+            token: "Bearer " + authorizer,
+            user: userDetail,
           });
         }
-      } catch (error) {
-        console.log(error);
+      } else {
+        res.json({
+          errorResponse: "Incorrect password",
+        });
       }
+    } catch (error) {
+      console.log(error);
+    }
+  },
+
+  getCurrentUser: (req, res, next) => {
+    const userId = req.user.id;
+    User.findOne(
+      { _id: userId },
+      { _id: 0, password: 0, __v: 0, address: 0, city: 0, state: 0 }
+    )
+      .then((user) => {
+        if (user) return res.json({ user });
+      })
+      .catch((err) => console.log(err));
+  },
+  getMessage: (req, res, next) => {
+    Message.find({ userId: req.user.id })
+      .then((message) => {
+        if (message) return res.json({ messages: message });
+      })
+      .catch((err) => console.log(err));
+  },
+  updateMessage: (req, res, next) => {
+    Message.find({ userId: req.user.id })
+      .then((result) => {
+        for (let i = 0; i < result.length; i++) {
+          result[i].status = "read";
+          result[i].save();
+        }
+        console.log(result);
+      })
+      .catch((err) => console.log(err));
+  },
+
+  fundMyWallet: (req, res, next) => {
+    const { amount } = req.body;
+    console.log(req.body);
+    let verifyAmount =
+      typeof amount === "number" && !isNaN(amount) && isFinite(amount);
+
+    if (verifyAmount) {
+      User.findById(req.user.id)
+        .then((user) => {
+          console.log(user);
+          if (!user)
+            return res.json({ errorResponse: " Record does not found" });
+          else {
+            user.wallet = user.wallet + amount;
+            let result = user.save();
+            if (result) {
+              let newUserV = {
+                first_name: user.first_name,
+                last_name: user.last_name,
+                email: user.email,
+                role: user.role,
+                wallet: user.wallet,
+                debitWallet: user.debitWallet,
+              };
+              return res.json({
+                successResponse: "your wallet has been credited",
+                user: newUserV,
+              });
+            }
+          }
+        })
+        .catch((error) => console.log(error));
+    } else {
+      return res.json({ errorResponse: "please enter a valid value" });
     }
   },
 };
